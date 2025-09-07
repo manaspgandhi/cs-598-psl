@@ -24,9 +24,6 @@ Notes:
     - ytest is the testing data set prediction
 """
 
-
-import numpy as np
-import matplotlib.pyplot as plt
 from ucimlrepo import fetch_ucirepo 
 
 def plot_errors_vs_k(k_values, train_errors, test_errors):
