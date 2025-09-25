@@ -4,6 +4,10 @@ import matplotlib.pyplot as plt
 
 df = pd.read_csv("bitcoin.csv")
 
+# =========================
+# STEP 1: Initial Data Analysis 
+# =========================
+
 # Parse and sort date column
 df['Date'] = pd.to_datetime(df['Date'])
 df = df.sort_values('Date').reset_index(drop=True)
@@ -36,14 +40,182 @@ plt.plot(x, y, label="BTC Market Price", color="blue")
 
 # Find the first non-zero date
 first_nonzero_date = df.loc[df['btc_market_price'] > 0].index.min()
-first_nonzero_price = df.loc[first_nonzero_date, 'btc_market_price']
 
-# Mark the point on the plot
-plt.axvline(first_nonzero_date, color="red", linestyle="--", alpha=0.7, label=f"First non-zero price: {first_nonzero_date.date()}")
-plt.scatter([first_nonzero_date], [first_nonzero_price], color="red", zorder=5)
+# ADDED: guard if no non-zero exists yet
+if pd.notna(first_nonzero_date):
+    first_nonzero_price = df.loc[first_nonzero_date, 'btc_market_price']
+    # Mark the point on the plot
+    plt.axvline(first_nonzero_date, color="red", linestyle="--", alpha=0.7, label=f"First non-zero price: {first_nonzero_date.date()}")
+    plt.scatter([first_nonzero_date], [first_nonzero_price], color="red", zorder=5)
+else:
+    print("Warning: btc_market_price never exceeds 0 (or is all NaN); skipping marker.")
 
 # Labels and title
 plt.title("Bitcoin Market Price Over Time")
+plt.xlabel("Date")
+plt.ylabel("BTC Market Price (USD)")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# =========================
+# STEP 2: Build modeling dataset (clean)
+# =========================
+
+# Choose modeling start at first non-zero BTC price
+model_start = first_nonzero_date
+
+# Remove all leading zero BTC values
+df_model = df.loc[df.index >= model_start].copy()
+
+# ADDED: (optional) enforce daily frequency; fill only price conservatively
+# If your CSV is already strictly daily with no gaps, this won't change anything.
+df_model = df_model.asfreq("D")
+df_model['btc_market_price'] = df_model['btc_market_price'].ffill()  # price can be forward-filled between missing days
+
+# ADDED: quick sanity check
+print("Modeling frame shape after cut & daily asfreq:", df_model.shape)
+print("Modeling frame head:\n", df_model.head(3))
+print("Any remaining NaNs in btc_market_price?", df_model['btc_market_price'].isna().any())
+
+# =========================
+# STEP 3: Define target & core time-aware features
+# =========================
+
+# ADDED: horizon h=1 (predict next-day price)
+h = 1
+df_model['target_next_price'] = df_model['btc_market_price'].shift(-h)  # what we want to predict
+
+# ADDED: basic returns + lags (lightweight to start)
+df_model['price_return_1d'] = df_model['btc_market_price'].pct_change()
+
+LAGS = [1, 3, 7, 14, 30]
+for L in LAGS:
+    df_model[f'price_lag_{L}'] = df_model['btc_market_price'].shift(L)
+    df_model[f'return_lag_{L}'] = df_model['price_return_1d'].shift(L)
+
+# ADDED: simple rolling stats (good signal, still fast)
+ROLLS = [3, 7, 14, 30]
+for W in ROLLS:
+    df_model[f'price_roll_mean_{W}'] = df_model['btc_market_price'].rolling(W).mean()
+    df_model[f'price_roll_std_{W}']  = df_model['btc_market_price'].rolling(W).std()
+
+# ADDED: drop rows made NaN by lags/rolling and by target shift
+df_model = df_model.dropna(subset=[c for c in df_model.columns if c != 'target_next_price'])
+df_model = df_model.dropna(subset=['target_next_price'])
+
+print("After feature engineering & dropna:", df_model.shape)
+
+# =========================
+# STEP 4: Time-based split (hold out last ~20% for test)
+# =========================
+
+split_idx = int(len(df_model) * 0.8)
+split_date = df_model.index[split_idx]
+train = df_model.loc[:split_date].copy()
+test  = df_model.loc[split_date + pd.Timedelta(days=1):].copy()
+
+feature_cols = [c for c in df_model.columns 
+                if c.startswith(('price_lag_', 'return_lag_', 'price_roll_'))]  # keep it simple for now
+target_col = 'target_next_price'
+
+print(f"Train range: {train.index.min().date()} → {train.index.max().date()}  (n={len(train)})")
+print(f"Test  range: {test.index.min().date()} → {test.index.max().date()}  (n={len(test)})")
+print("Using features:", feature_cols)
+
+# =========================
+# STEP 5: Quick sanity baseline (naïve: predict yesterday's price)
+# =========================
+
+# Naïve prediction equals price_lag_1 (already aligned at time t)
+test_baseline_pred = test['price_lag_1']
+y_true = test[target_col]
+
+from sklearn.metrics import mean_absolute_error, mean_squared_error  # FIXED
+import numpy as np
+
+mae = mean_absolute_error(y_true, test_baseline_pred)
+rmse = mean_squared_error(y_true, test_baseline_pred, squared=False)  # FIXED
+print(f"Naïve baseline — MAE: {mae:.4f}, RMSE: {rmse:.4f}")
+
+# Optional: plot baseline vs actual for quick visual check
+# FIXED: convert pandas Index/Series to NumPy to avoid multi-dimensional indexing error
+x_test = test.index.to_numpy()                              # FIXED
+y_true_np = y_true.to_numpy()                               # FIXED
+test_baseline_pred_np = test_baseline_pred.to_numpy()       # FIXED
+
+plt.figure(figsize=(12,6))
+plt.plot(x_test, y_true_np, label="Actual next-day price")                      # FIXED
+plt.plot(x_test, test_baseline_pred_np, label="Naïve (lag-1) prediction", alpha=0.8)  # FIXED
+plt.title("Baseline Check: Actual vs Naïve (Lag-1) on Test")
+plt.xlabel("Date")
+plt.ylabel("BTC Market Price (USD)")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# =========================
+# ADDED: STEP 6 — Train a simple model with TimeSeries CV and test it
+# =========================
+
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+
+X_train = train[feature_cols].to_numpy()
+y_train = train[target_col].to_numpy()
+X_test  = test[feature_cols].to_numpy()
+y_test  = y_true.to_numpy()  # keeps your name y_true above; NumPy view for safety
+
+# time-series aware CV
+tscv = TimeSeriesSplit(n_splits=5)
+
+# pipeline: impute -> scale -> ridge
+pipe = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler()),
+    ("model", Ridge())
+])
+
+param_grid = {
+    "model__alpha": [0.1, 1.0, 3.0, 10.0, 30.0, 100.0]
+}
+
+search = GridSearchCV(
+    estimator=pipe,
+    param_grid=param_grid,
+    scoring="neg_mean_absolute_error",
+    cv=tscv,
+    n_jobs=-1,
+    refit=True
+)
+
+search.fit(X_train, y_train)
+best_alpha = search.best_params_["model__alpha"]
+print(f"Best alpha from TimeSeries CV (MAE): {best_alpha}")
+
+# refit model is already on full train; make test predictions
+test_pred = search.predict(X_test)
+
+test_mae = mean_absolute_error(y_test, test_pred)
+test_rmse = mean_squared_error(y_test, test_pred, squared=False)
+print(f"Ridge on test — MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}")
+
+# Compare vs baseline
+improvement_mae  = mae - test_mae
+improvement_rmse = rmse - test_rmse
+print(f"Improvement over naïve — ΔMAE: {improvement_mae:.4f}, ΔRMSE: {improvement_rmse:.4f}")
+
+# Plot model vs actual
+# FIXED: convert Index to NumPy for x-axis
+x_test = test.index.to_numpy()  # FIXED
+
+plt.figure(figsize=(12,6))
+plt.plot(x_test, y_test, label="Actual next-day price")     # y_test is already NumPy
+plt.plot(x_test, test_pred, label="Ridge prediction", alpha=0.9)
+plt.title("Test Set: Actual vs Ridge Prediction")
 plt.xlabel("Date")
 plt.ylabel("BTC Market Price (USD)")
 plt.legend()
