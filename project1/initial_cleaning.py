@@ -79,32 +79,47 @@ print("Modeling frame head:\n", df_model.head(3))
 print("Any remaining NaNs in btc_market_price?", df_model['btc_market_price'].isna().any())
 
 # =========================
-# STEP 3: Define target & core time-aware features
+# STEP 3: Define target & feature engineering
 # =========================
 
-# ADDED: horizon h=1 (predict next-day price)
+# Horizon: predict next-day price
 h = 1
-df_model['target_next_price'] = df_model['btc_market_price'].shift(-h)  # what we want to predict
+df_model['target_next_price'] = df_model['btc_market_price'].shift(-h)
 
-# ADDED: basic returns + lags (lightweight to start)
-df_model['price_return_1d'] = df_model['btc_market_price'].pct_change()
+# Helper function to engineer features
+def engineer_features(df, col, lags=[1,3,7,14,30], rolls=[3,7,14,30], add_returns=True):
+    """Generate lag, return, and rolling stats for one column."""
+    if add_returns:
+        df[f"{col}_return_1d"] = df[col].pct_change()
 
-LAGS = [1, 3, 7, 14, 30]
-for L in LAGS:
-    df_model[f'price_lag_{L}'] = df_model['btc_market_price'].shift(L)
-    df_model[f'return_lag_{L}'] = df_model['price_return_1d'].shift(L)
+    for L in lags:
+        df[f"{col}_lag_{L}"] = df[col].shift(L)
+        if add_returns:
+            df[f"{col}_return_lag_{L}"] = df[f"{col}_return_1d"].shift(L)
 
-# ADDED: simple rolling stats (good signal, still fast)
-ROLLS = [3, 7, 14, 30]
-for W in ROLLS:
-    df_model[f'price_roll_mean_{W}'] = df_model['btc_market_price'].rolling(W).mean()
-    df_model[f'price_roll_std_{W}']  = df_model['btc_market_price'].rolling(W).std()
+    for W in rolls:
+        df[f"{col}_roll_mean_{W}"] = df[col].rolling(W).mean()
+        df[f"{col}_roll_std_{W}"]  = df[col].rolling(W).std()
 
-# ADDED: drop rows made NaN by lags/rolling and by target shift
-df_model = df_model.dropna(subset=[c for c in df_model.columns if c != 'target_next_price'])
+    return df
+
+# Choose which columns to build features for
+selected_features = [
+    "btc_market_price",
+    "btc_market_cap",
+    "btc_trade_volume",
+    "btc_total_bitcoins",
+    "btc_n_unique_addresses"
+]
+
+# Apply feature engineering
+for col in selected_features:
+    df_model = engineer_features(df_model, col)
+
+# Drop rows with missing target
 df_model = df_model.dropna(subset=['target_next_price'])
 
-print("After feature engineering & dropna:", df_model.shape)
+print("After feature engineering:", df_model.shape)
 
 # =========================
 # STEP 4: Time-based split (hold out last ~20% for test)
@@ -116,7 +131,7 @@ train = df_model.loc[:split_date].copy()
 test  = df_model.loc[split_date + pd.Timedelta(days=1):].copy()
 
 feature_cols = [c for c in df_model.columns 
-                if c.startswith(('price_lag_', 'return_lag_', 'price_roll_'))]  # keep it simple for now
+                if any(c.startswith(col) for col in selected_features)] # keep it simple for now
 target_col = 'target_next_price'
 
 print(f"Train range: {train.index.min().date()} → {train.index.max().date()}  (n={len(train)})")
@@ -127,8 +142,8 @@ print("Using features:", feature_cols)
 # STEP 5: Quick sanity baseline (naïve: predict yesterday's price)
 # =========================
 
-# Naïve prediction equals price_lag_1 (already aligned at time t)
-test_baseline_pred = test['price_lag_1']
+# Naïve prediction equals yesterday's price (btc_market_price_lag_1)
+test_baseline_pred = test['btc_market_price_lag_1']
 y_true = test[target_col]
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error  # FIXED
