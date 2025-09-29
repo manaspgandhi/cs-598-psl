@@ -14,7 +14,7 @@ df['Date'] = pd.to_datetime(df['Date'])
 df = df.sort_values('Date').reset_index(drop=True)
 df = df.set_index('Date')
 
-# ensure numeric
+# Ensure numeric
 df['btc_market_price'] = pd.to_numeric(df['btc_market_price'], errors='coerce')
 
 # Missing values
@@ -41,17 +41,11 @@ plt.plot(x, y, label="BTC Market Price", color="blue")
 
 # Find the first non-zero date
 first_nonzero_date = df.loc[df['btc_market_price'] > 0].index.min()
+first_nonzero_price = df.loc[first_nonzero_date, 'btc_market_price']
 
-# ADDED: guard if no non-zero exists yet
-if pd.notna(first_nonzero_date):
-    first_nonzero_price = df.loc[first_nonzero_date, 'btc_market_price']
-    # Mark the point on the plot
-    plt.axvline(first_nonzero_date, color="red", linestyle="--", alpha=0.7, label=f"First non-zero price: {first_nonzero_date.date()}")
-    plt.scatter([first_nonzero_date], [first_nonzero_price], color="red", zorder=5)
-else:
-    print("Warning: btc_market_price never exceeds 0 (or is all NaN); skipping marker.")
-
-# Labels and title
+# Mark the point on the plot
+plt.axvline(first_nonzero_date, color="red", linestyle="--", alpha=0.7, label=f"First non-zero price: {first_nonzero_date.date()}")
+plt.scatter([first_nonzero_date], [first_nonzero_price], color="red", zorder=5)
 plt.title("Bitcoin Market Price Over Time")
 plt.xlabel("Date")
 plt.ylabel("BTC Market Price (USD)")
@@ -69,12 +63,10 @@ model_start = first_nonzero_date
 # Remove all leading zero BTC values
 df_model = df.loc[df.index >= model_start].copy()
 
-# ADDED: (optional) enforce daily frequency; fill only price conservatively
-# If your CSV is already strictly daily with no gaps, this won't change anything.
+# Enforce daily frequency
 df_model = df_model.asfreq("D")
 df_model['btc_market_price'] = df_model['btc_market_price'].ffill()  # price can be forward-filled between missing days
 
-# ADDED: quick sanity check
 print("Modeling frame shape after cut & daily asfreq:", df_model.shape)
 print("Modeling frame head:\n", df_model.head(3))
 print("Any remaining NaNs in btc_market_price?", df_model['btc_market_price'].isna().any())
@@ -132,7 +124,7 @@ train = df_model.loc[:split_date].copy()
 test  = df_model.loc[split_date + pd.Timedelta(days=1):].copy()
 
 feature_cols = [c for c in df_model.columns 
-                if any(c.startswith(col) for col in selected_features)] # keep it simple for now
+                if any(c.startswith(col) for col in selected_features)]
 target_col = 'target_next_price'
 
 print(f"Train range: {train.index.min().date()} → {train.index.max().date()}  (n={len(train)})")
@@ -140,29 +132,28 @@ print(f"Test  range: {test.index.min().date()} → {test.index.max().date()}  (n
 print("Using features:", feature_cols)
 
 # =========================
-# STEP 5: Quick sanity baseline (naïve: predict yesterday's price)
+# STEP 5: Baseline (naïve: predict yesterday's price)
 # =========================
 
 # Naïve prediction equals yesterday's price (btc_market_price_lag_1)
 test_baseline_pred = test['btc_market_price_lag_1']
 y_true = test[target_col]
 
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error  # FIXED
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 import numpy as np
 
 mae = mean_absolute_error(y_true, test_baseline_pred)
-rmse = root_mean_squared_error(y_true, test_baseline_pred)  # FIXED
+rmse = root_mean_squared_error(y_true, test_baseline_pred)
 print(f"Naïve baseline — MAE: {mae:.4f}, RMSE: {rmse:.4f}")
 
-# Optional: plot baseline vs actual for quick visual check
-# FIXED: convert pandas Index/Series to NumPy to avoid multi-dimensional indexing error
-x_test = test.index.to_numpy()                              # FIXED
-y_true_np = y_true.to_numpy()                               # FIXED
-test_baseline_pred_np = test_baseline_pred.to_numpy()       # FIXED
+# Plot baseline vs actual for quick visual check
+x_test = test.index.to_numpy()                              
+y_true_np = y_true.to_numpy()                               
+test_baseline_pred_np = test_baseline_pred.to_numpy()     
 
 plt.figure(figsize=(12,6))
-plt.plot(x_test, y_true_np, label="Actual next-day price")                      # FIXED
-plt.plot(x_test, test_baseline_pred_np, label="Naïve (lag-1) prediction", alpha=0.8)  # FIXED
+plt.plot(x_test, y_true_np, label="Actual next-day price")                      
+plt.plot(x_test, test_baseline_pred_np, label="Naïve (lag-1) prediction", alpha=0.8) 
 plt.title("Baseline Check: Actual vs Naïve (Lag-1) on Test")
 plt.xlabel("Date")
 plt.ylabel("BTC Market Price (USD)")
@@ -171,7 +162,7 @@ plt.tight_layout()
 plt.show()
 
 # =========================
-# ADDED: STEP 6 — Train a simple model with TimeSeries CV and test it
+# ADDED: STEP 6 — Ridge Regression
 # =========================
 
 from sklearn.pipeline import Pipeline
@@ -183,12 +174,11 @@ from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 X_train = train[feature_cols].to_numpy()
 y_train = train[target_col].to_numpy()
 X_test  = test[feature_cols].to_numpy()
-y_test  = y_true.to_numpy()  # keeps your name y_true above; NumPy view for safety
+y_test  = y_true.to_numpy()
 
 # time-series aware CV
 tscv = TimeSeriesSplit(n_splits=5)
 
-# pipeline: impute -> scale -> ridge
 pipe = Pipeline(steps=[
     ("imputer", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler()),
@@ -212,24 +202,23 @@ search.fit(X_train, y_train)
 best_alpha = search.best_params_["model__alpha"]
 print(f"Best alpha from TimeSeries CV (MAE): {best_alpha}")
 
-# refit model is already on full train; make test predictions
+# Refit model is already on full train; make test predictions
 test_pred = search.predict(X_test)
 
-test_mae = mean_absolute_error(y_test, test_pred)
+test_mae_ridge = mean_absolute_error(y_test, test_pred)
 test_rmse = root_mean_squared_error(y_test, test_pred)
-print(f"Ridge on test — MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}")
+print(f"Ridge on test — MAE: {test_mae_ridge:.4f}, RMSE: {test_rmse:.4f}")
 
 # Compare vs baseline
-improvement_mae  = mae - test_mae
+improvement_mae  = mae - test_mae_ridge
 improvement_rmse = rmse - test_rmse
 print(f"Improvement over naïve — ΔMAE: {improvement_mae:.4f}, ΔRMSE: {improvement_rmse:.4f}")
 
 # Plot model vs actual
-# FIXED: convert Index to NumPy for x-axis
-x_test = test.index.to_numpy()  # FIXED
+x_test = test.index.to_numpy()
 
 plt.figure(figsize=(12,6))
-plt.plot(x_test, y_test, label="Actual next-day price")     # y_test is already NumPy
+plt.plot(x_test, y_test, label="Actual next-day price")
 plt.plot(x_test, test_pred, label="Ridge prediction", alpha=0.9)
 plt.title("Test Set: Actual vs Ridge Prediction")
 plt.xlabel("Date")
@@ -290,7 +279,7 @@ plt.tight_layout()
 plt.show()
 
 # =========================
-# STEP 8: Try Random Forest
+# STEP 8: Random Forest
 # =========================
 from sklearn.ensemble import RandomForestRegressor
 
