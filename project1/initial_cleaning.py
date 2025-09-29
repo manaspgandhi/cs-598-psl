@@ -105,6 +105,9 @@ selected_features = [
     "btc_n_unique_addresses"
 ]
 
+for _col in [c for c in selected_features if c != "btc_market_price"]:
+    df_model[_col] = pd.to_numeric(df_model[_col], errors="coerce")
+
 # Apply feature engineering
 for col in selected_features:
     df_model = engineer_features(df_model, col)
