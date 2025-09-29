@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
+import sys
+import sklearn
 df = pd.read_csv("bitcoin.csv")
 
 # =========================
@@ -146,11 +147,11 @@ print("Using features:", feature_cols)
 test_baseline_pred = test['btc_market_price_lag_1']
 y_true = test[target_col]
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error  # FIXED
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error  # FIXED
 import numpy as np
 
 mae = mean_absolute_error(y_true, test_baseline_pred)
-rmse = mean_squared_error(y_true, test_baseline_pred, squared=False)  # FIXED
+rmse = root_mean_squared_error(y_true, test_baseline_pred)  # FIXED
 print(f"Naïve baseline — MAE: {mae:.4f}, RMSE: {rmse:.4f}")
 
 # Optional: plot baseline vs actual for quick visual check
@@ -215,7 +216,7 @@ print(f"Best alpha from TimeSeries CV (MAE): {best_alpha}")
 test_pred = search.predict(X_test)
 
 test_mae = mean_absolute_error(y_test, test_pred)
-test_rmse = mean_squared_error(y_test, test_pred, squared=False)
+test_rmse = root_mean_squared_error(y_test, test_pred)
 print(f"Ridge on test — MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}")
 
 # Compare vs baseline
@@ -236,3 +237,119 @@ plt.ylabel("BTC Market Price (USD)")
 plt.legend()
 plt.tight_layout()
 plt.show()
+
+# =========================
+# STEP 7: Lasso Regression
+# =========================
+from sklearn.linear_model import Lasso
+
+# Lasso pipeline
+pipe_lasso = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler()),
+    ("model", Lasso(random_state=42))
+])
+
+# define hyperperam grid for Lasso's alpha
+param_grid_lasso = {
+    "model__alpha": [0.1, 1.0, 10.0, 50.0, 100.0]
+}
+
+# GridSearchCV
+search_lasso = GridSearchCV(
+    estimator=pipe_lasso,
+    param_grid=param_grid_lasso,
+    scoring="neg_mean_absolute_error",
+    cv=tscv,
+    n_jobs=-1
+)
+
+print("Running GridSearchCV for Lasso...")
+search_lasso.fit(X_train, y_train)
+print("Best Lasso params:", search_lasso.best_params_)
+
+# preds and eval
+test_pred_lasso = search_lasso.predict(X_test)
+test_mae_lasso = mean_absolute_error(y_test, test_pred_lasso)
+test_rmse_lasso = root_mean_squared_error(y_test, test_pred_lasso)
+print(f"Lasso on test — MAE: {test_mae_lasso:.4f}, RMSE: {test_rmse_lasso:.4f}")
+
+improvement_mae_lasso  = mae - test_mae_lasso
+improvement_rmse_lasso = rmse - test_rmse_lasso
+print(f"Improvement over naïve — ΔMAE: {improvement_mae_lasso:.4f}, ΔRMSE: {improvement_rmse_lasso:.4f}")
+
+# actual vs. pred for Lasso
+plt.figure(figsize=(12, 6))
+plt.plot(x_test, y_test, label="Actual next-day price")
+plt.plot(x_test, test_pred_lasso, label="Lasso prediction", alpha=0.9)
+plt.title("Test Set: Actual vs. Lasso Prediction")
+plt.xlabel("Date")
+plt.ylabel("BTC Market Price (USD)")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# =========================
+# STEP 8: Try Random Forest
+# =========================
+from sklearn.ensemble import RandomForestRegressor
+
+# define random forest pipeline
+pipe_rf = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler()),
+    ("model", RandomForestRegressor(random_state=42, n_jobs=-1))
+])
+
+#hyperparam grid for Random Forest
+#tried preventing model from getting lazy but didnt work
+param_grid_rf = {
+    'model__n_estimators': [200],
+    'model__max_depth': [15]
+}
+
+#gridsearch
+search_rf = GridSearchCV(
+    estimator=pipe_rf,
+    param_grid=param_grid_rf,
+    scoring="neg_mean_absolute_error",
+    cv=tscv,
+    n_jobs=-1 # Also use all CPU cores for the search itself
+)
+
+print("\nRunning GridSearchCV for Random Forest...")
+search_rf.fit(X_train, y_train)
+print("Best Random Forest params:", search_rf.best_params_)
+
+# predict + evaluate
+test_pred_rf = search_rf.predict(X_test)
+test_mae_rf = mean_absolute_error(y_test, test_pred_rf)
+test_rmse_rf = root_mean_squared_error(y_test, test_pred_rf)
+print(f"Random Forest on test — MAE: {test_mae_rf:.4f}, RMSE: {test_rmse_rf:.4f}")
+improvement_mae_rf  = mae - test_mae_rf
+improvement_rmse_rf = rmse - test_rmse_rf
+print(f"Improvement over naïve — ΔMAE: {improvement_mae_rf:.4f}, ΔRMSE: {improvement_rmse_rf:.4f}")
+
+#plot actual vs predicted for Random Forest
+plt.figure(figsize=(12, 6))
+plt.plot(x_test, y_test, label="Actual next-day price")
+plt.plot(x_test, test_pred_rf, label="Random Forest prediction", alpha=0.9)
+plt.title("Test Set: Actual vs. Random Forest Prediction")
+plt.xlabel("Date")
+plt.ylabel("BTC Market Price (USD)")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+# =========================
+# STEP 9: Final model comparison
+# =========================
+
+print("\n--- Final Model MAE Comparison ---")
+print(f"{'Model':<20} | {'MAE':<10}")
+print("-" * 33)
+print(f"{'Naïve baseline':<20} | {mae:.4f}")
+print(f"{'Ridge regression':<20} | {test_mae:.4f}")
+print(f"{'Lasso regression':<20} | {test_mae_lasso:.4f}")
+print(f"{'Random Forest':<20} | {test_mae_rf:.4f}")
