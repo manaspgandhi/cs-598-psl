@@ -5,27 +5,23 @@ import sys
 import sklearn
 df = pd.read_csv("bitcoin.csv")
 
-# =========================
-# STEP 1: Initial Data Analysis 
-# =========================
-
-# Parse and sort date column
+#parse and sort date col
 df['Date'] = pd.to_datetime(df['Date'])
 df = df.sort_values('Date').reset_index(drop=True)
 df = df.set_index('Date')
 
-# Ensure numeric
+#make them numbrs
 df['btc_market_price'] = pd.to_numeric(df['btc_market_price'], errors='coerce')
 
-# Missing values
+#missing vals
 missing = df.isna().mean().sort_values(ascending=False) * 100
 print("\%Percent of Missing Values by Column:\n", missing)
 
-# Zero values
+#0 vals
 zeros = (df == 0).mean().sort_values(ascending=False) * 100
 print("\n%Percent of Zero Values by Column:\n", zeros)
 
-# Column summary
+#col summary
 summary = pd.DataFrame({
     "dtype": df.dtypes,
     "min": df.min(),
@@ -33,17 +29,17 @@ summary = pd.DataFrame({
 })
 print("\nColumn summary:\n", summary)
 
-# Convert to numpy for plotting
+#np for plotting
 x = df.index.to_numpy()
 y = df['btc_market_price'].to_numpy(dtype=float)
 plt.figure(figsize=(12,6))
 plt.plot(x, y, label="BTC Market Price", color="blue")
 
-# Find the first non-zero date
+#first non0 date
 first_nonzero_date = df.loc[df['btc_market_price'] > 0].index.min()
 first_nonzero_price = df.loc[first_nonzero_date, 'btc_market_price']
 
-# Mark the point on the plot
+#plot
 plt.axvline(first_nonzero_date, color="red", linestyle="--", alpha=0.7, label=f"First non-zero price: {first_nonzero_date.date()}")
 plt.scatter([first_nonzero_date], [first_nonzero_price], color="red", zorder=5)
 plt.title("Bitcoin Market Price Over Time")
@@ -53,33 +49,27 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# =========================
-# STEP 2: Build modeling dataset (clean)
-# =========================
-
-# Choose modeling start at first non-zero BTC price
+#build dataset
+#choose modeling start at first non 0 btc price
 model_start = first_nonzero_date
 
-# Remove all leading zero BTC values
+#remove all leading 0 btc values
 df_model = df.loc[df.index >= model_start].copy()
 
-# Enforce daily frequency
+#enforce daily frequency
 df_model = df_model.asfreq("D")
-df_model['btc_market_price'] = df_model['btc_market_price'].ffill()  # price can be forward-filled between missing days
+df_model['btc_market_price'] = df_model['btc_market_price'].ffill() 
 
 print("Modeling frame shape after cut & daily asfreq:", df_model.shape)
 print("Modeling frame head:\n", df_model.head(3))
 print("Any remaining NaNs in btc_market_price?", df_model['btc_market_price'].isna().any())
 
-# =========================
-# STEP 3: Define target & feature engineering
-# =========================
-
-# Horizon: predict next-day price
+#taregt, features
+#horizon: predict next-day price
 h = 1
 df_model['target_next_price'] = df_model['btc_market_price'].shift(-h)
 
-# Helper function to engineer features
+#helper function to engineer features
 def engineer_features(df, col, lags=[1,3,7,14,30], rolls=[3,7,14,30], add_returns=True):
     """Generate lag, return, and rolling stats for one column."""
     if add_returns:
@@ -96,7 +86,7 @@ def engineer_features(df, col, lags=[1,3,7,14,30], rolls=[3,7,14,30], add_return
 
     return df
 
-# Choose which columns to build features for
+#choose cols to build features
 selected_features = [
     "btc_market_price",
     "btc_market_cap",
@@ -108,19 +98,16 @@ selected_features = [
 for _col in [c for c in selected_features if c != "btc_market_price"]:
     df_model[_col] = pd.to_numeric(df_model[_col], errors="coerce")
 
-# Apply feature engineering
+#apply feature engineering
 for col in selected_features:
     df_model = engineer_features(df_model, col)
 
-# Drop rows with missing target
+#drop rows with missing target
 df_model = df_model.dropna(subset=['target_next_price'])
 
 print("After feature engineering:", df_model.shape)
 
-# =========================
-# STEP 4: Time-based split (hold out last ~20% for test)
-# =========================
-
+#time split
 split_idx = int(len(df_model) * 0.8)
 split_date = df_model.index[split_idx]
 train = df_model.loc[:split_date].copy()
@@ -134,11 +121,8 @@ print(f"Train range: {train.index.min().date()} → {train.index.max().date()}  
 print(f"Test  range: {test.index.min().date()} → {test.index.max().date()}  (n={len(test)})")
 print("Using features:", feature_cols)
 
-# =========================
-# STEP 5: Baseline (naïve: predict yesterday's price)
-# =========================
-
-# Naïve prediction equals yesterday's price (btc_market_price_lag_1)
+#naive bayes
+#naïve prediction = yesterday's price (btc_market_price_lag_1)
 test_baseline_pred = test['btc_market_price_lag_1']
 y_true = test[target_col]
 
@@ -149,7 +133,7 @@ mae = mean_absolute_error(y_true, test_baseline_pred)
 rmse = root_mean_squared_error(y_true, test_baseline_pred)
 print(f"Naïve baseline — MAE: {mae:.4f}, RMSE: {rmse:.4f}")
 
-# Plot baseline vs actual for quick visual check
+#baseline vs actual
 x_test = test.index.to_numpy()                              
 y_true_np = y_true.to_numpy()                               
 test_baseline_pred_np = test_baseline_pred.to_numpy()     
@@ -164,10 +148,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# =========================
-# ADDED: STEP 6 — Ridge Regression
-# =========================
-
+#ridge regression
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -179,7 +160,7 @@ y_train = train[target_col].to_numpy()
 X_test  = test[feature_cols].to_numpy()
 y_test  = y_true.to_numpy()
 
-# time-series aware CV
+#time-series aware cv
 tscv = TimeSeriesSplit(n_splits=5)
 
 pipe = Pipeline(steps=[
@@ -205,19 +186,19 @@ search.fit(X_train, y_train)
 best_alpha = search.best_params_["model__alpha"]
 print(f"Best alpha from TimeSeries CV (MAE): {best_alpha}")
 
-# Refit model is already on full train; make test predictions
+#make test preds
 test_pred = search.predict(X_test)
 
 test_mae_ridge = mean_absolute_error(y_test, test_pred)
 test_rmse = root_mean_squared_error(y_test, test_pred)
 print(f"Ridge on test — MAE: {test_mae_ridge:.4f}, RMSE: {test_rmse:.4f}")
 
-# Compare vs baseline
+#compare vs baseline
 improvement_mae  = mae - test_mae_ridge
 improvement_rmse = rmse - test_rmse
 print(f"Improvement over naïve — ΔMAE: {improvement_mae:.4f}, ΔRMSE: {improvement_rmse:.4f}")
 
-# Plot model vs actual
+#model vs actual
 x_test = test.index.to_numpy()
 
 plt.figure(figsize=(12,6))
@@ -230,24 +211,22 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# =========================
-# STEP 7: Lasso Regression
-# =========================
+#lasso regression
 from sklearn.linear_model import Lasso
 
-# Lasso pipeline
+#lasso pipeline
 pipe_lasso = Pipeline(steps=[
     ("imputer", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler()),
     ("model", Lasso(random_state=42))
 ])
 
-# define hyperperam grid for Lasso's alpha
+#define hyperperam grid for lasso's alpha
 param_grid_lasso = {
     "model__alpha": [0.1, 1.0, 10.0, 50.0, 100.0]
 }
 
-# GridSearchCV
+#gridsearchcv
 search_lasso = GridSearchCV(
     estimator=pipe_lasso,
     param_grid=param_grid_lasso,
@@ -260,7 +239,7 @@ print("Running GridSearchCV for Lasso...")
 search_lasso.fit(X_train, y_train)
 print("Best Lasso params:", search_lasso.best_params_)
 
-# preds and eval
+#preds and eval
 test_pred_lasso = search_lasso.predict(X_test)
 test_mae_lasso = mean_absolute_error(y_test, test_pred_lasso)
 test_rmse_lasso = root_mean_squared_error(y_test, test_pred_lasso)
@@ -270,7 +249,7 @@ improvement_mae_lasso  = mae - test_mae_lasso
 improvement_rmse_lasso = rmse - test_rmse_lasso
 print(f"Improvement over naïve — ΔMAE: {improvement_mae_lasso:.4f}, ΔRMSE: {improvement_rmse_lasso:.4f}")
 
-# actual vs. pred for Lasso
+#actual vs. pred for lasso
 plt.figure(figsize=(12, 6))
 plt.plot(x_test, y_test, label="Actual next-day price")
 plt.plot(x_test, test_pred_lasso, label="Lasso prediction", alpha=0.9)
@@ -281,19 +260,17 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# =========================
-# STEP 8: Random Forest
-# =========================
+#random forest
 from sklearn.ensemble import RandomForestRegressor
 
-# define random forest pipeline
+#define random forest pipeline
 pipe_rf = Pipeline(steps=[
     ("imputer", SimpleImputer(strategy="median")),
     ("scaler", StandardScaler()),
     ("model", RandomForestRegressor(random_state=42, n_jobs=-1))
 ])
 
-#hyperparam grid for Random Forest
+#hyperparam grid for random forest
 #tried preventing model from getting lazy but didnt work
 param_grid_rf = {
     'model__n_estimators': [200],
@@ -306,14 +283,14 @@ search_rf = GridSearchCV(
     param_grid=param_grid_rf,
     scoring="neg_mean_absolute_error",
     cv=tscv,
-    n_jobs=-1 # Also use all CPU cores for the search itself
+    n_jobs=-1
 )
 
 print("\nRunning GridSearchCV for Random Forest...")
 search_rf.fit(X_train, y_train)
 print("Best Random Forest params:", search_rf.best_params_)
 
-# predict + evaluate
+#predict + evaluate
 test_pred_rf = search_rf.predict(X_test)
 test_mae_rf = mean_absolute_error(y_test, test_pred_rf)
 test_rmse_rf = root_mean_squared_error(y_test, test_pred_rf)
@@ -322,7 +299,7 @@ improvement_mae_rf  = mae - test_mae_rf
 improvement_rmse_rf = rmse - test_rmse_rf
 print(f"Improvement over naïve — ΔMAE: {improvement_mae_rf:.4f}, ΔRMSE: {improvement_rmse_rf:.4f}")
 
-#plot actual vs predicted for Random Forest
+#plot actual vs predicted for random forest
 plt.figure(figsize=(12, 6))
 plt.plot(x_test, y_test, label="Actual next-day price")
 plt.plot(x_test, test_pred_rf, label="Random Forest prediction", alpha=0.9)
@@ -333,11 +310,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-
-# =========================
-# STEP 9: Final model comparison
-# =========================
-
+#compare all the models
 print("\n--- Final Model MAE Comparison ---")
 print(f"{'Model':<20} | {'MAE':<10}")
 print("-" * 33)
